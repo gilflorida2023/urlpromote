@@ -65,8 +65,12 @@ def get_article_urls(folder_id, db_path):
     return urls
 
 def export_urls_to_csv(folder_title, urls):
-    # Simple filename sanitization - just remove characters that would be invalid in filenames
-    safe_title = re.sub(r'[<>:"/\\|?*]', '', folder_title).strip()
+    # Replace spaces and special characters with underscores
+    safe_title = re.sub(r'[^\w]', '_', folder_title)
+    # Remove consecutive underscores
+    safe_title = re.sub(r'_+', '_', safe_title)
+    # Remove leading/trailing underscores
+    safe_title = safe_title.strip('_')
     filename = f"liferea_urls_{safe_title}.csv"
     
     with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
