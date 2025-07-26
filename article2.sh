@@ -82,7 +82,7 @@ if [ -f "$CACHE_FILE" ]; then
   
   # Refresh if older than 24 hours
   if [ $cache_age_hours -ge 24 ]; then
-    echo "Cache expired (${cache_age_hours}h old), refreshing..."
+    #echo "Cache expired (${cache_age_hours}h old), refreshing..."
     ARTICLE_CONTENT=$(curl -s -L "$URL" | lynx -dump -stdin -nolist -width=80)
     echo "$ARTICLE_CONTENT" > "$CACHE_FILE"
   else
@@ -90,7 +90,7 @@ if [ -f "$CACHE_FILE" ]; then
     ARTICLE_CONTENT=$(cat "$CACHE_FILE")
   fi
 else
-  echo "No cache found - fetching from $URL..."
+  #echo "No cache found - fetching from $URL..."
   ARTICLE_CONTENT=$(curl -s -L "$URL" | lynx -dump -stdin -nolist -width=80)
   echo "$ARTICLE_CONTENT" > "$CACHE_FILE"
 fi
