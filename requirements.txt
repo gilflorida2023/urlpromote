@@ -3,3 +3,4 @@ requests>=2.31.0           # For HTTP requests (if urltag.py fetches URLs)
 beautifulsoup4>=4.12.0     # For HTML parsing (if urltag.py scrapes content)
 feedparser>=6.0.10         # Only needed if parsing raw RSS/Atom feeds
 python-dateutil>=2.8.2     # For date handling (optional but useful)
+ollama

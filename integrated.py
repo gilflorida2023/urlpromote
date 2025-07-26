@@ -115,7 +115,8 @@ def generate_promotion(url, content):
         f"Content: {content[:1500]}"
     )
     try:
-        response = ollama.generate(model='llama3.2', prompt=prompt, options={'num_predict': 50, 'temperature': 0.5, 'top_k': 1})
+        #response = ollama.generate(model='llama3.2', prompt=prompt, options={'num_predict': 50, 'temperature': 0.5, 'top_k': 1})
+        response = ollama.generate(model='deepseek-r1:8b', prompt=prompt, options={'num_predict': 50, 'temperature': 0.5, 'top_k': 1})
         promotion = response['response'].strip()
         if len(promotion) > 280:
             promotion = promotion[:277] + "..."
