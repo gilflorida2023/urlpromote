@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-OLLAMA_HOST=192.168.0.10:11434
+OLLAMA_HOST=192.168.0.8:11434
 # allmodels.sh - Ollama Model Testing Framework
 #
 # Description:
@@ -196,6 +196,8 @@ unload_ollama_models $OLLAMA_HOST
 #URL="https://www.bbc.com/news/videos/c4gdg13rrx4o"
 #URL="https://www.dailymail.co.uk/news/article-14943711/ghislaine-maxwell-prince-andrew-grilling.html?ns_mchannel=rss&ns_campaign=1490&ito=1490"
 URL="https://www.washingtontimes.com/news/2025/jul/27/lindsey-graham-israel-change-tactics-destroy-hamas/"
+URL="https://www.dailymail.co.uk/sciencetech/article-14947565/Neuralink-female-patient-shocking-effect-brain-chip.html?ns_mchannel=rss&ns_campaign=1490&ito=1490"
+URL="https://cryptopanic.com/news/23751717/Can-VINE-cryptocurrency-sustain-the-Elon-Musk-initiated-bull-run-Heres-a-closer-look"
 rm -f output.txt
 # Main testing loop
 for model in $(ollama_list_edited $OLLAMA_HOST); do

@@ -8,7 +8,101 @@ import re
 import subprocess
 import time
 import psutil
+import threading
 import unicodedata
+from queue import Queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+class OllamaWorkerPool:
+    def __init__(self, hosts):
+        self.hosts = hosts
+        self.task_queue = Queue()
+        self.result_queue = Queue()
+        self.workers = []
+        self.shutdown_flag = False
+        
+    def start(self):
+        """Start worker threads"""
+        for host in self.hosts:
+            worker = threading.Thread(
+                target=self._worker_loop,
+                args=(host,),
+                daemon=True
+            )
+            worker.start()
+            self.workers.append(worker)
+    
+    def _worker_loop(self, host):
+        """Worker thread processing loop"""
+        while not self.shutdown_flag:
+            try:
+                task = self.task_queue.get(timeout=1)
+                if task is None:  # Sentinel value for shutdown
+                    break
+                    
+                url, callback = task
+                try:
+                    result = self._process_url(host, url)
+                    self.result_queue.put((url, result))
+                    if callback:
+                        callback(url, result)
+                except Exception as e:
+                    print(f"Worker error on {host}: {str(e)}")
+                finally:
+                    self.task_queue.task_done()
+            except:
+                continue
+    
+    def _process_url(self, host, url):
+        """Process a single URL using the specified host"""
+        try:
+            start_time = time.time()
+            result = subprocess.run(
+                ["./article3.sh", host, url],
+                capture_output=True,
+                text=True,
+                check=True,
+                env={'TERM': 'dumb', **os.environ}
+            )
+            processing_time = time.time() - start_time
+            if processing_time > 30:  # Log slow processing
+                print(f"  [i] Processed in {processing_time:.1f}s: {url[:60]}...")
+            promotion = clean_text(result.stdout.strip())
+            return promotion if promotion and "Error" not in promotion else "Error"
+        except subprocess.CalledProcessError as e:
+            print(f"  [!] Process error on {host}: {clean_text(e.stderr.strip())[:200]}...")
+            return "Error"
+        except Exception as e:
+            print(f"  [!] System error on {host}: {str(e)}")
+            return "Error"
+    
+    def add_task(self, url, callback=None):
+        """Add a URL processing task to the queue"""
+        self.task_queue.put((url, callback))
+    
+    def shutdown(self):
+        """Gracefully shutdown the worker pool"""
+        self.shutdown_flag = True
+        for _ in self.workers:
+            self.task_queue.put(None)
+        for worker in self.workers:
+            worker.join(timeout=5)
+
+def determine_promotion(url, worker_pool):
+    """Generate promotion using worker pool without timeouts"""
+    result_queue = Queue()
+    
+    def callback(url, result):
+        result_queue.put((url, result))
+    
+    worker_pool.add_task(url, callback)
+    
+    try:
+        _, result = result_queue.get()  # No timeout
+        return result
+    except Exception as e:
+        print(f"  [!] Queue error: {str(e)}")
+        return f"Error: {str(e)}"
 
 def stop_liferea():
     """Gracefully stop Liferea process if running"""
@@ -16,11 +110,11 @@ def stop_liferea():
         for proc in psutil.process_iter(['name']):
             if proc.info['name'] == 'liferea':
                 print("Stopping Liferea process...")
-                proc.terminate()  # Try to terminate gracefully
+                proc.terminate()
                 try:
-                    proc.wait(5)  # Wait up to 5 seconds
+                    proc.wait(5)
                 except psutil.TimeoutExpired:
-                    proc.kill()   # Force kill if not responding
+                    proc.kill()
                 return True
         return False
     except Exception as e:
@@ -37,128 +131,36 @@ def start_liferea():
         print(f"Warning: Could not start Liferea - {str(e)}")
         return False
 
-def format_duration(seconds):
-    """
-    Formats a duration in seconds into a human-readable string.
-    Examples: "0.500s", "5s", "2m 30s", "1h 30m 45s"
-    """
-    weeks = int(seconds // (7 * 24 * 60 * 60))
-    days = int((seconds % (7 * 24 * 60 * 60)) // (24 * 60 * 60))
-    hours = int((seconds % (24 * 60 * 60)) // (60 * 60))
-    minutes = int((seconds % (60 * 60)) // 60)
-    secs = int(seconds % 60)
-    milliseconds = int(round((seconds - int(seconds)) * 1000))
-
-    def format_seconds(secs, ms):
-        if secs == 0 and ms > 0:
-            return f"0.{ms:03d}s"
-        elif ms == 0:
-            return f"{secs}s"
-        else:
-            return f"{secs}.{ms:03d}s"
-
-    parts = []
-    if weeks > 0:
-        parts.append(f"{weeks}w")
-        parts.append(f"{days}d")
-        parts.append(f"{hours}h")
-        parts.append(f"{minutes}m")
-        parts.append(format_seconds(secs, milliseconds))
-    elif days > 0:
-        parts.append(f"{days}d")
-        parts.append(f"{hours}h")
-        parts.append(f"{minutes}m")
-        parts.append(format_seconds(secs, milliseconds))
-    elif hours > 0:
-        parts.append(f"{hours}h")
-        parts.append(f"{minutes}m")
-        parts.append(format_seconds(secs, milliseconds))
-    elif minutes > 0:
-        parts.append(f"{minutes}m")
-        if secs > 0 or milliseconds > 0:
-            parts.append(format_seconds(secs, milliseconds))
-    else:
-        parts.append(format_seconds(secs, milliseconds))
-    return " ".join(parts)
-
-def measure_elapsed_time(func, *args, **kwargs):
-    """Measures and formats the execution time of a function"""
-    start = time.perf_counter()
-    result = func(*args, **kwargs)
-    end = time.perf_counter()
-    duration = end - start
-    return result, format_duration(duration)
-
 def clean_text(text):
     """Remove control characters and normalize to ASCII"""
     if not text:
         return ""
-    
-    # Remove ANSI escape sequences
     text = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', text)
-    
-    # Normalize Unicode to ASCII
     text = unicodedata.normalize('NFKD', text)
     text = text.encode('ascii', 'ignore').decode('ascii')
-    
-    # Remove remaining control chars
     text = re.sub(r'[\x00-\x1F\x7F]', '', text)
-    
-    # Standardize quotes and whitespace
     text = text.replace('"', "'").strip()
     text = re.sub(r'\s+', ' ', text)
-    
     return text
 
 def normalize_url(url):
     """Normalize URL for better deduplication"""
     if not url:
         return url
-    
-    # Remove common tracking parameters and fragments
     url = re.sub(r'[?&](utm_[^&]+|fbclid|gclid|mc_[^&]+)=[^&]*', '', url)
     url = re.sub(r'[?&]sid=[^&]*', '', url)
     url = re.sub(r'/#.*$', '', url)
-    
-    # Standardize protocol and www
     url = re.sub(r'^http://', 'https://', url)
     url = re.sub(r'^https://www\.', 'https://', url)
-    
-    # Remove trailing slashes and empty query strings
     url = re.sub(r'/\?$', '', url)
     url = re.sub(r'/$', '', url)
     url = re.sub(r'\?$', '', url)
-    
     return url.lower().strip()
-
-def determine_promotion(url):
-    """Generate promotion using article2.sh script with clean output"""
-    try:
-        result = subprocess.run(
-            ["./article2.sh", url],
-            capture_output=True,
-            text=True,
-            check=True,
-            env={'TERM': 'dumb', **os.environ}  # Prevent control characters
-        )
-        promotion = clean_text(result.stdout.strip())
-        
-        if not promotion or "Error" in promotion:
-            return "Error"
-            
-        return promotion
-    except subprocess.CalledProcessError as e:
-        print(f"Error generating promotion: {clean_text(e.stderr.strip())}")
-        return "Error"
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        return "Error"
 
 def get_search_folders(db_path):
     """Retrieve search folders from Liferea database"""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
     cursor.execute("""
     SELECT n.node_id, n.title, COUNT(sfi.item_id)
     FROM node n
@@ -167,7 +169,6 @@ def get_search_folders(db_path):
     GROUP BY n.node_id
     ORDER BY n.title
     """)
-    
     folders = []
     for row in cursor.fetchall():
         folders.append({
@@ -175,21 +176,18 @@ def get_search_folders(db_path):
             'title': row[1],
             'count': row[2]
         })
-    
     conn.close()
     return folders
 
 def get_article_urls(folder_id, db_path):
-    """Retrieve article URLs from a specific folder with deduplication"""
+    """Retrieve article URLs from a specific folder"""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    
     cursor.execute("PRAGMA table_info(items)")
     columns = [col[1] for col in cursor.fetchall()]
     
     url_columns = ['url', 'source', 'link', 'guid']
     found_column = None
-    
     for col in url_columns:
         if col in columns:
             found_column = col
@@ -207,18 +205,15 @@ def get_article_urls(folder_id, db_path):
     ORDER BY i.updated DESC
     """, (folder_id,))
     
-    # Use a set to track seen URLs while preserving order
     seen_urls = set()
     urls = []
-    
     for row in cursor.fetchall():
         url = row[0]
         if url:
             normalized = normalize_url(url)
             if normalized and normalized not in seen_urls:
                 seen_urls.add(normalized)
-                urls.append(url)  # Store original URL
-    
+                urls.append(url)
     conn.close()
     return urls
 
@@ -228,7 +223,7 @@ def load_processed_urls(filename):
     try:
         with open(filename, 'r', encoding='ascii') as csvfile:
             reader = csv.reader(csvfile)
-            next(reader)  # Skip header
+            next(reader)
             for row in reader:
                 if len(row) >= 2:
                     processed_urls.add(normalize_url(row[1]))
@@ -236,13 +231,12 @@ def load_processed_urls(filename):
         pass
     return processed_urls
 
-def export_urls_to_csv(folder_title, urls):
-    """Export URLs with promotions to clean ASCII CSV"""
+def export_urls_to_csv(folder_title, urls, worker_pool):
+    """Export URLs with promotions to CSV"""
     safe_title = re.sub(r'[^\w]', '_', folder_title)
     safe_title = re.sub(r'_+', '_', safe_title).strip('_')
     filename = f"liferea_urls_{safe_title}.csv"
 
-    # Track URLs we've already processed
     processed_urls = load_processed_urls(filename)
     new_urls_count = 0
 
@@ -253,45 +247,58 @@ def export_urls_to_csv(folder_title, urls):
                           escapechar='\\',
                           doublequote=False)
         
-        # Write header only if file is new
         if csvfile.tell() == 0:
             writer.writerow(['Promotion', 'URL'])
 
-        for i, url in enumerate(urls, 1):
-            normalized = normalize_url(url)
-            if not normalized:
-                continue
+        with ThreadPoolExecutor(max_workers=len(worker_pool.hosts)) as executor:
+            future_to_url = {
+                executor.submit(
+                    lambda u: (u, determine_promotion(u, worker_pool)),
+                    url
+                ): url 
+                for url in urls 
+                if normalize_url(url) not in processed_urls
+            }
 
-            if normalized in processed_urls:
-                print(f"\nSkipping already processed URL {i}/{len(urls)}: {clean_text(url)[:80]}...")
-                continue
-
-            print(f"\nProcessing URL {i}/{len(urls)}: {clean_text(url)[:80]}...")
-            promotion, duration = measure_elapsed_time(determine_promotion, url)
-
-            if promotion == "Error":
-                print(f"  [!] Failed to generate promotion (took {duration})")
-                processed_urls.add(normalized)  # Mark as processed to avoid retries
-                continue
-
-            clean_url = clean_text(url)
-            
-            if promotion.startswith("Reject:"):
-                print(f"  [!] Skipping rejected promotion: {promotion[:80]}...")
-                processed_urls.add(normalized)  # Mark as processed
-                continue
+            for future in as_completed(future_to_url):
+                url, promotion = future.result()
+                normalized = normalize_url(url)
                 
-            print(f"  [+] Generated promotion ({duration}): {promotion[:50]}...")
-            writer.writerow([promotion, clean_url])
-            csvfile.flush()
-            processed_urls.add(normalized)
-            new_urls_count += 1
+                if not normalized:
+                    continue
+
+                if promotion == "Error":
+                    print(f"  [!] Failed to generate promotion for: {url[:80]}...")
+                    processed_urls.add(normalized)
+                    continue
+
+                clean_url = clean_text(url)
+                
+                if promotion.startswith("Reject:"):
+                    print(f"  [!] Skipping rejected promotion: {promotion[:80]}...")
+                    processed_urls.add(normalized)
+                    continue
+                    
+                print(f"  [+] Generated promotion for: {url[:60]}...")
+                writer.writerow([promotion, clean_url])
+                csvfile.flush()
+                processed_urls.add(normalized)
+                new_urls_count += 1
 
     print(f"\nOperation complete. Processed {new_urls_count} new URLs out of {len(urls)} total.")
     print(f"Results saved to {filename}")
 
 def main():
-    # Stop Liferea before database operations
+    if len(sys.argv) < 2:
+        print("Usage: ./integrated.py <ollama_host1> [<ollama_host2> ...]")
+        sys.exit(1)
+    
+    ollama_hosts = sys.argv[1:]
+    print(f"Using Ollama hosts: {', '.join(ollama_hosts)}")
+    
+    worker_pool = OllamaWorkerPool(ollama_hosts)
+    worker_pool.start()
+    
     was_running = stop_liferea()
     
     try:
@@ -324,7 +331,7 @@ def main():
                     continue
                     
                 print(f"Found {len(urls)} unique URLs after deduplication")
-                export_urls_to_csv(folder['title'], urls)
+                export_urls_to_csv(folder['title'], urls, worker_pool)
                 print("\nOperation complete. You can:")
                 print("1. Export another folder")
                 print("2. Press 'q' to quit")
@@ -332,10 +339,9 @@ def main():
                 print("Invalid selection. Please try again.")
     
     finally:
-        pass
-        # Restart Liferea if it was running
-        #if was_running:
-            #start_liferea()
+        if was_running:
+            start_liferea()
+        worker_pool.shutdown()
 
 if __name__ == "__main__":
     main()

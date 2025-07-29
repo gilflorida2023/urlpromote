@@ -251,3 +251,6 @@ fi
 
 # Final output (to stdout)
 echo "$summary"
+
+
+unload_ollama_models "$OLLAMA_HOST"
