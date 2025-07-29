@@ -110,6 +110,27 @@ def clean_text(text):
     
     return text
 
+def normalize_url(url):
+    """Normalize URL for better deduplication"""
+    if not url:
+        return url
+    
+    # Remove common tracking parameters and fragments
+    url = re.sub(r'[?&](utm_[^&]+|fbclid|gclid|mc_[^&]+)=[^&]*', '', url)
+    url = re.sub(r'[?&]sid=[^&]*', '', url)
+    url = re.sub(r'/#.*$', '', url)
+    
+    # Standardize protocol and www
+    url = re.sub(r'^http://', 'https://', url)
+    url = re.sub(r'^https://www\.', 'https://', url)
+    
+    # Remove trailing slashes and empty query strings
+    url = re.sub(r'/\?$', '', url)
+    url = re.sub(r'/$', '', url)
+    url = re.sub(r'\?$', '', url)
+    
+    return url.lower().strip()
+
 def determine_promotion(url):
     """Generate promotion using article2.sh script with clean output"""
     try:
@@ -159,7 +180,7 @@ def get_search_folders(db_path):
     return folders
 
 def get_article_urls(folder_id, db_path):
-    """Retrieve article URLs from a specific folder"""
+    """Retrieve article URLs from a specific folder with deduplication"""
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
@@ -186,9 +207,34 @@ def get_article_urls(folder_id, db_path):
     ORDER BY i.updated DESC
     """, (folder_id,))
     
-    urls = [row[0] for row in cursor.fetchall() if row[0]]
+    # Use a set to track seen URLs while preserving order
+    seen_urls = set()
+    urls = []
+    
+    for row in cursor.fetchall():
+        url = row[0]
+        if url:
+            normalized = normalize_url(url)
+            if normalized and normalized not in seen_urls:
+                seen_urls.add(normalized)
+                urls.append(url)  # Store original URL
+    
     conn.close()
     return urls
+
+def load_processed_urls(filename):
+    """Load already processed URLs from existing CSV"""
+    processed_urls = set()
+    try:
+        with open(filename, 'r', encoding='ascii') as csvfile:
+            reader = csv.reader(csvfile)
+            next(reader)  # Skip header
+            for row in reader:
+                if len(row) >= 2:
+                    processed_urls.add(normalize_url(row[1]))
+    except FileNotFoundError:
+        pass
+    return processed_urls
 
 def export_urls_to_csv(folder_title, urls):
     """Export URLs with promotions to clean ASCII CSV"""
@@ -196,34 +242,53 @@ def export_urls_to_csv(folder_title, urls):
     safe_title = re.sub(r'_+', '_', safe_title).strip('_')
     filename = f"liferea_urls_{safe_title}.csv"
 
-    with open(filename, 'w', newline='', encoding='ascii') as csvfile:
+    # Track URLs we've already processed
+    processed_urls = load_processed_urls(filename)
+    new_urls_count = 0
+
+    with open(filename, 'a', newline='', encoding='ascii') as csvfile:
         writer = csv.writer(csvfile,
                           quoting=csv.QUOTE_ALL,
                           delimiter=',',
                           escapechar='\\',
                           doublequote=False)
         
-        writer.writerow(['Promotion', 'URL'])
+        # Write header only if file is new
+        if csvfile.tell() == 0:
+            writer.writerow(['Promotion', 'URL'])
 
         for i, url in enumerate(urls, 1):
+            normalized = normalize_url(url)
+            if not normalized:
+                continue
+
+            if normalized in processed_urls:
+                print(f"\nSkipping already processed URL {i}/{len(urls)}: {clean_text(url)[:80]}...")
+                continue
+
             print(f"\nProcessing URL {i}/{len(urls)}: {clean_text(url)[:80]}...")
             promotion, duration = measure_elapsed_time(determine_promotion, url)
 
             if promotion == "Error":
                 print(f"  [!] Failed to generate promotion (took {duration})")
+                processed_urls.add(normalized)  # Mark as processed to avoid retries
                 continue
 
             clean_url = clean_text(url)
             
             if promotion.startswith("Reject:"):
                 print(f"  [!] Skipping rejected promotion: {promotion[:80]}...")
+                processed_urls.add(normalized)  # Mark as processed
                 continue
                 
             print(f"  [+] Generated promotion ({duration}): {promotion[:50]}...")
             writer.writerow([promotion, clean_url])
             csvfile.flush()
+            processed_urls.add(normalized)
+            new_urls_count += 1
 
-    print(f"\nSuccessfully exported {len(urls)} URLs to {filename}")
+    print(f"\nOperation complete. Processed {new_urls_count} new URLs out of {len(urls)} total.")
+    print(f"Results saved to {filename}")
 
 def main():
     # Stop Liferea before database operations
@@ -258,6 +323,7 @@ def main():
                     print("No URLs found in this folder")
                     continue
                     
+                print(f"Found {len(urls)} unique URLs after deduplication")
                 export_urls_to_csv(folder['title'], urls)
                 print("\nOperation complete. You can:")
                 print("1. Export another folder")
@@ -266,9 +332,10 @@ def main():
                 print("Invalid selection. Please try again.")
     
     finally:
+        pass
         # Restart Liferea if it was running
-        if was_running:
-            start_liferea()
+        #if was_running:
+            #start_liferea()
 
 if __name__ == "__main__":
     main()

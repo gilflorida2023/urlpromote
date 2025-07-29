@@ -1,5 +1,6 @@
 #!/bin/bash
-
+#
+OLLAMA_HOST=192.168.0.10:11434
 # allmodels.sh - Ollama Model Testing Framework
 #
 # Description:
@@ -28,6 +29,64 @@
 # Examples:
 #   ./allmodels.sh
 
+# Function to validate OLLAMA_HOST parameter
+validate_ollama_host() {
+    if [ -z "$1" ]; then
+        echo "Error: allmodels OLLAMA_HOST must be the first parameter and cannot be empty $2" >&2
+        echo "Usage: func  <OLLAMA_HOST>" >&2
+        exit 1
+    fi
+}
+
+# Function to unload all Ollama models from memory
+unload_ollama_models() {
+    local host="$1"
+    validate_ollama_host "$host" "unload_ollama_models"
+
+    # Fetch loaded models (silently)
+    local loaded_models
+    loaded_models=$(curl -s "http://$host/api/ps" | jq -r '.models[].name' 2>/dev/null)
+
+    # Exit if no models loaded
+    if [ -z "$loaded_models" ]; then
+        echo "No models currently loaded." >&2
+        return 0
+    fi
+
+    # Show loaded models if verbose
+    echo "Found loaded models:" >&2
+    echo "$loaded_models" | sed 's/^/  /' >&2
+
+    # Process each model
+    local unload_errors=0
+    while read -r model; do
+        echo -n "Unloading $model... " >&2
+
+        # Unload request
+        curl -s -X POST "http://$host/api/generate" \
+            -H "Content-Type: application/json" \
+            -d '{"model": "'"$model"'", "prompt": "", "keep_alive": 0}' >/dev/null
+
+        # Verify unload
+        if curl -s "http://$host/api/ps" | jq -e --arg model "$model" \
+           'any(.models[]?.name; . == $model)' >/dev/null; then
+            echo "❌" >&2
+            ((unload_errors++))
+        else
+            echo "✅" >&2
+        fi
+    done <<< "$loaded_models"
+
+    # Return status
+    if [ $unload_errors -gt 0 ]; then
+        echo "allmodels Warning: Failed to unload $unload_errors model(s)" >&2
+        return 0
+        #return 1
+    else
+        echo "allmodels All models unloaded successfully" >&2
+        return 0
+    fi
+}
 
 format_elapsed() {
     local seconds=$1
@@ -48,7 +107,10 @@ format_elapsed() {
 }
 
 ollama_list_models() {
-    ollama list | sed -e 's/\ .*//' | sed -e '1d' |sort
+    local host="$1"
+    validate_ollama_host "$host" "ollama_list_models"
+
+    curl -s http://${host}/api/tags | jq -r '.models[].name' | sort
 }
 
 # Define your skip list (space-separated)
@@ -57,24 +119,72 @@ ollama_list_models() {
 export SKIP_LIST="deepcoder:14b deepcoder:1.5b deepscaler:1.5b deepseek-r1:14b deepseek-r1:1.5b deepseek-r1:32b deepseek-r1:7b deepseek-r1:8b devstral:24b gemma3:1b gemma3:27b gemma3n:e2b gemma3n:e4b granite3.2-vision:2b granite3.2-vision-abliterated:2b granite3.3:2b granite3.3:2b-base granite3.3:8b granite3.3:8b-base huihui_ai/granite3.2-vision-abliterated:2b huihui_ai/magistral-abliterated:24b ibm/granite3.3:2b-base ibm/granite3.3:8b-base llava:7b magistral:24b magistral-abliterated:24bi minicpm-v:8b mistral-small3.1:24b mistral-small3.2:24b mistral-small3.2:24bi phi4-mini-reasoning:3.8b phi4-reasoning:latest qwen2.5:0.5b qwen2.5:1.5b qwen2.5:7b qwen3:30b qwen2.5:32b qwen2.5vl:32b qwen2.5vl:3b qwen2.5vl:7b qwen3:0.6b qwen3:14b qwen3:1.7b qwen3:32b qwen3:4b qwen3:8b qwq:latest"
 
 ollama_list_edited() {
+    local host="$1"
+    validate_ollama_host "$host" "ollama_list_edited"
     # Check if skip list is non-empty
     if [[ -z "$SKIP_LIST" ]]; then
-        ollama_list_models
+        ollama_list_models $host
     else
         # Convert space-separated list to grep pattern
         pattern=$(echo "$SKIP_LIST" | tr ' ' '|')
-        ollama_list_models | grep -vE "$pattern"
+        ollama_list_models $host| grep -vE "$pattern"
     fi
 }
 
-ollama_stop_all() {
-     echo "Stopping all running Ollama models..."
-     ollama ps | awk 'NR>1 {print $1}' | xargs -I{} ollama stop {}
-     echo "All models stopped"
+
+# Function to unload all Ollama models from memory
+unload_ollama_models() {
+    local host="$1"
+    validate_ollama_host "$host" "unload_ollama_models"
+
+
+    # Fetch loaded models (silently)
+    local loaded_models
+    loaded_models=$(curl -s "http://$host/api/ps" | jq -r '.models[].name' 2>/dev/null)
+
+    # Exit if no models loaded
+    if [ -z "$loaded_models" ]; then
+        echo "No models currently loaded." >&2
+        return 0
+    fi
+
+    # Show loaded models if verbose
+    echo "Found loaded models:" >&2
+    echo "$loaded_models" | sed 's/^/  /' >&2
+
+    # Process each model
+    local unload_errors=0
+    while read -r model; do
+        echo -n "Unloading $model... " >&2
+
+        # Unload request
+        curl -s -X POST "http://$host/api/generate" \
+            -H "Content-Type: application/json" \
+            -d '{"model": "'"$model"'", "prompt": "", "keep_alive": 0}' >/dev/null
+
+        # Verify unload
+        if curl -s "http://$host/api/ps" | jq -e --arg model "$model" \
+           'any(.models[]?.name; . == $model)' >/dev/null; then
+            echo "❌" >&2
+            ((unload_errors++))
+        else
+            echo "✅" >&2
+        fi
+    done <<< "$loaded_models"
+
+    # Return status
+    if [ $unload_errors -gt 0 ]; then
+        echo "Warning: Failed to unload $unload_errors model(s)" >&2
+        return 1
+    else
+        echo "All models unloaded successfully" >&2
+        return 0
+    fi
 }
 
+
 # Clear previous output
-ollama_stop_all
+unload_ollama_models $OLLAMA_HOST
 #URL="https://www.theverge.com/tesla/712703/tesla-robotaxi-fsd-elon-musk-earnings-q2-2025"
 #URL="https://www.businessinsider.com/grok-chatbot-rudi-kids-elon-musk-i-tried-why-2025-7"
 #URL="https://www.rt.com/news/621830-trump-seeking-spacex-alternative/"
@@ -82,15 +192,18 @@ ollama_stop_all
 #URL="https://www.ibtimes.co.uk/roller-skates-superchargers-optimus-serving-popcorn-whats-really-inside-elon-musks-tesla-1739015"
 #URL="https://metro.co.uk/2025/07/22/south-park-scores-groundbreaking-1-500-000-000-deal-fans-vow-cancel-streaming-subscriptions-23720220/"
 #URL="https://www.dailymail.co.uk/columnists/article-14940875/Now-South-Park-mocking-Trump-Epstein-knows-hes-facing-scandal-control-ANDREW-NEIL.html?ns_mchannel=rss&ns_campaign=1490&ito=1490"
-URL="https://www.tmz.com/2025/07/25/ghislaine-maxwell-talks-100-names-linked-jeffrey-epstein-feds-interview-immunity/"
+#URL="https://www.tmz.com/2025/07/25/ghislaine-maxwell-talks-100-names-linked-jeffrey-epstein-feds-interview-immunity/"
+#URL="https://www.bbc.com/news/videos/c4gdg13rrx4o"
+#URL="https://www.dailymail.co.uk/news/article-14943711/ghislaine-maxwell-prince-andrew-grilling.html?ns_mchannel=rss&ns_campaign=1490&ito=1490"
+URL="https://www.washingtontimes.com/news/2025/jul/27/lindsey-graham-israel-change-tactics-destroy-hamas/"
 rm -f output.txt
 # Main testing loop
-for model in $(ollama_list_edited); do
+for model in $(ollama_list_edited $OLLAMA_HOST); do
     echo "---------------------------------" | tee -a output.txt
     echo "Testing model: $model" | tee -a output.txt
     
     stime=$(date '+%s')
-    bash article2.sh "$URL" "$model" | tee -a output.txt
+    bash article3.sh "$OLLAMA_HOST" "$URL" "$model" 257 | tee -a output.txt
     exit_code=$?
     etime=$(date '+%s')
     
@@ -104,7 +217,7 @@ for model in $(ollama_list_edited); do
         echo "WARNING: Model $model failed with exit code $exit_code" | tee -a output.txt
     fi
     
-    ollama_stop_all
+    unload_ollama_models $OLLAMA_HOST 
 done
 
 echo -e "\nTesting complete. Results saved to:"

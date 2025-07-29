@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+#export OLLAMA_HOST=192.168.0.8:11434
+OLLAMA_HOST=${OLLAMA_HOST:-localhost:11434}
+
+# Fetch the list of currently loaded models from the /api/ps endpoint
+loaded_models=$(curl -s "http://${OLLAMA_HOST:-localhost:11434}/api/ps" | jq -r '.models[].name' 2>/dev/null)
+
+# Check if any models are loaded
+if [ -z "$loaded_models" ]; then
+    echo "No models are currently loaded." >&2
+    exit 0
+fi
+
+# Loop through each loaded model
+echo "Found loaded models:" >&2
+echo "$loaded_models" | while read -r model; do
+    echo "Unloading model: $model" >&2
+    
+    # Make a request to /api/generate with keep_alive=0 to unload the model
+    curl -s -X POST "http://${OLLAMA_HOST}/api/generate" \
+        -H "Content-Type: application/json" \
+        -d '{
+            "model": "'"$model"'",
+            "prompt": "dummy",
+            "keep_alive": 0
+        }' >/dev/null 2>&1
+    
+    # Verify unload was successful
+    #if ! curl -s "http://${OLLAMA_HOST}/api/ps" | jq -e '.models[] | select(.name == "'"$model"'")' >/dev/null; then
+        #echo "✅ Successfully unloaded: $model" >&2
+    #else
+        #echo "❌ Failed to unload: $model" >&2
+    #fi
+done
+
+echo "Unload process completed." >&2
