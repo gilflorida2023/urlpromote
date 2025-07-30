@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 import os
 import sys
@@ -66,15 +67,17 @@ class OllamaWorkerPool:
             )
             processing_time = time.time() - start_time
             if processing_time > 30:  # Log slow processing
-                print(f"  [i] Processed in {processing_time:.1f}s: {url[:60]}...")
+                print(f"  [i] Processed in {processing_time:.1f}s on {host}: {url[:60]}...")
             promotion = clean_text(result.stdout.strip())
-            return promotion if promotion and "Error" not in promotion else "Error"
+            return (promotion if promotion and "Error" not in promotion else "Error", 
+                    processing_time, 
+                    host)
         except subprocess.CalledProcessError as e:
             print(f"  [!] Process error on {host}: {clean_text(e.stderr.strip())[:200]}...")
-            return "Error"
+            return ("Error", 0, host)
         except Exception as e:
             print(f"  [!] System error on {host}: {str(e)}")
-            return "Error"
+            return ("Error", 0, host)
     
     def add_task(self, url, callback=None):
         """Add a URL processing task to the queue"""
@@ -102,7 +105,7 @@ def determine_promotion(url, worker_pool):
         return result
     except Exception as e:
         print(f"  [!] Queue error: {str(e)}")
-        return f"Error: {str(e)}"
+        return ("Error", 0, "unknown")
 
 def stop_liferea():
     """Gracefully stop Liferea process if running"""
@@ -119,16 +122,6 @@ def stop_liferea():
         return False
     except Exception as e:
         print(f"Warning: Could not stop Liferea - {str(e)}")
-        return False
-
-def start_liferea():
-    """Start Liferea process"""
-    try:
-        print("Restarting Liferea...")
-        subprocess.Popen(['liferea'], start_new_session=True)
-        return True
-    except Exception as e:
-        print(f"Warning: Could not start Liferea - {str(e)}")
         return False
 
 def clean_text(text):
@@ -233,10 +226,7 @@ def load_processed_urls(filename):
 
 def export_urls_to_csv(folder_title, urls, worker_pool):
     """Export URLs with promotions to CSV"""
-    safe_title = re.sub(r'[^\w]', '_', folder_title)
-    safe_title = re.sub(r'_+', '_', safe_title).strip('_')
-    filename = f"liferea_urls_{safe_title}.csv"
-
+    filename = "news.csv"
     processed_urls = load_processed_urls(filename)
     new_urls_count = 0
 
@@ -248,7 +238,8 @@ def export_urls_to_csv(folder_title, urls, worker_pool):
                           doublequote=False)
         
         if csvfile.tell() == 0:
-            writer.writerow(['Promotion', 'URL'])
+            writer.writerow(['Promotion', 'URL', 'Search Folder Name', 
+                           'Duration (Seconds)', 'Ollama Host'])
 
         with ThreadPoolExecutor(max_workers=len(worker_pool.hosts)) as executor:
             future_to_url = {
@@ -261,26 +252,27 @@ def export_urls_to_csv(folder_title, urls, worker_pool):
             }
 
             for future in as_completed(future_to_url):
-                url, promotion = future.result()
+                url, (promotion, duration, host) = future.result()
                 normalized = normalize_url(url)
                 
                 if not normalized:
                     continue
 
                 if promotion == "Error":
-                    print(f"  [!] Failed to generate promotion for: {url[:80]}...")
+                    print(f"  [!] Failed to generate promotion on {host}: {url[:80]}...")
                     processed_urls.add(normalized)
                     continue
 
                 clean_url = clean_text(url)
                 
                 if promotion.startswith("Reject:"):
-                    print(f"  [!] Skipping rejected promotion: {promotion[:80]}...")
+                    print(f"  [!] Skipping rejected promotion from {host}: {promotion[:80]}...")
                     processed_urls.add(normalized)
                     continue
                     
-                print(f"  [+] Generated promotion for: {url[:60]}...")
-                writer.writerow([promotion, clean_url])
+                print(f"  [+] Generated promotion on {host} in {duration:.2f}s: {url[:60]}...")
+                writer.writerow([promotion, clean_url, folder_title, 
+                               f"{duration:.2f}", host])
                 csvfile.flush()
                 processed_urls.add(normalized)
                 new_urls_count += 1
@@ -299,7 +291,7 @@ def main():
     worker_pool = OllamaWorkerPool(ollama_hosts)
     worker_pool.start()
     
-    was_running = stop_liferea()
+    stop_liferea()
     
     try:
         db_path = str(Path("~/.local/share/liferea/liferea.db").expanduser())
@@ -339,8 +331,6 @@ def main():
                 print("Invalid selection. Please try again.")
     
     finally:
-        if was_running:
-            start_liferea()
         worker_pool.shutdown()
 
 if __name__ == "__main__":

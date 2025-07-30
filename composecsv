@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-FILENAME=new.csv
-rm -f "$FILENAME"
-sed -e '/^"PROMOTION"/d' *.csv >> "$FILENAME"
-wc -l "$FILENAME"
