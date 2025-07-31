@@ -1,21 +1,20 @@
 #!/bin/bash
 
-# article2.sh - Article Summarization Tool
+# article3.sh - Article Summarization Tool
 #
 # Description:
 #   Fetches and summarizes web articles using Ollama language models via API with caching
+#   Detects repeated content when cache is fresh
 #
 # Usage:
-#   ./article2.sh <OLLAMA_HOST> <URL> [OLLAMA_MODEL] [SUMMARY_LENGTH]
+#   ./article3.sh <OLLAMA_HOST> <URL> [OLLAMA_MODEL] [SUMMARY_LENGTH] [REPEATED]
 #
 # Parameters:
 #   OLLAMA_HOST   - Required first parameter, host:port for Ollama server (e.g., 192.168.0.8:11434)
 #   URL           - URL of the article to summarize
 #   OLLAMA_MODEL  - Optional, model to use (default: qwen2.5:14b)
 #   SUMMARY_LENGTH - Optional, character length for summary (default: 257)
-#
-# Dependencies:
-#   curl, lynx, jq, stat
+#   REPEATED      - Optional, set to "REPEATED" to allow processing of repeated content (default: detect repeats)
 
 # Get the script name dynamically for cache directory
 SCRIPT_NAME=$(basename "$0" .sh)
@@ -24,7 +23,7 @@ SCRIPT_NAME=$(basename "$0" .sh)
 validate_ollama_host() {
     if [ -z "$1" ]; then
         echo "Error: OLLAMA_HOST must be the first parameter and cannot be empty $2" >&2
-        echo "Usage: $SCRIPT_NAME <OLLAMA_HOST>" >&2
+        echo "Usage: $SCRIPT_NAME <OLLAMA_HOST> <URL> [OLLAMA_MODEL] [SUMMARY_LENGTH] [REPEATED]" >&2
         exit 1
     fi
 }
@@ -81,7 +80,7 @@ unload_ollama_models() {
 # Check for required arguments
 if [ $# -lt 2 ]; then
     echo "Error: Missing required parameters" >&2
-    echo "Usage: $SCRIPT_NAME <OLLAMA_HOST> <URL> [OLLAMA_MODEL] [SUMMARY_LENGTH]" >&2
+    echo "Usage: $SCRIPT_NAME <OLLAMA_HOST> <URL> [OLLAMA_MODEL] [SUMMARY_LENGTH] [REPEATED]" >&2
     exit 1
 fi
 
@@ -91,6 +90,7 @@ validate_ollama_host "$OLLAMA_HOST" "article3 main module"
 URL="$2"
 OLLAMA_MODEL="${3:-qwen2.5:14b}"
 SUMMARY_LENGTH="${4:-257}"
+ALLOW_REPEATED="${5:-no}"
 
 SUMMARY_PROMPT="Respond ONLY with the ${SUMMARY_LENGTH}-character summary. No thinking output. Summary: $(cat <<'EOF'
 Provide a concise summary of this article in exactly ${SUMMARY_LENGTH} characters or less (including spaces). 
@@ -102,6 +102,7 @@ EOF
 echo "Using host: $OLLAMA_HOST" >&2
 echo "Using model: $OLLAMA_MODEL" >&2
 echo "Summary length: $SUMMARY_LENGTH" >&2
+echo "Allow repeated content: $ALLOW_REPEATED" >&2
 
 # Verify Ollama connection
 check_ollama_server() {
@@ -147,6 +148,37 @@ for cmd in curl lynx jq stat; do
     command -v $cmd &> /dev/null || { echo "Missing dependency: $cmd" >&2; exit 1; }
 done
 
+# Check for repeated content
+check_repeated_content() {
+    if [ "$ALLOW_REPEATED" = "REPEATED" ]; then
+        echo "Skipping repeat check (REPEATED flag set)" >&2
+        return 1
+    fi
+
+    if [ -f "$CACHE_FILE" ]; then
+        current_time=$(date +%s)
+        if stat -f %m "$CACHE_FILE" >/dev/null 2>&1; then
+            file_mtime=$(stat -f %m "$CACHE_FILE")
+        else
+            file_mtime=$(stat -c %Y "$CACHE_FILE")
+        fi
+        
+        cache_age_hours=$(( (current_time - file_mtime) / 3600 ))
+        
+        if [ $cache_age_hours -lt 24 ]; then
+            echo "REPEATED"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# Check for repeated content before processing
+if repeated_result=$(check_repeated_content); then
+    echo "$repeated_result"
+    exit 0
+fi
+
 # Get article content with caching
 if [ -f "$CACHE_FILE" ]; then
     current_time=$(date +%s)
@@ -161,7 +193,9 @@ if [ -f "$CACHE_FILE" ]; then
     
     if [ $cache_age_hours -ge 24 ]; then
         echo "Refreshing expired cache..." >&2
-        ARTICLE_CONTENT=$(curl -s -L "$URL" | lynx -dump -stdin -nolist -width=80)
+        # Modern Chrome user agent string
+        CHROME_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ARTICLE_CONTENT=$(curl -s -L -A "$CHROME_UA" "$URL" | lynx -dump -stdin -nolist -width=80)
         echo "$ARTICLE_CONTENT" > "$CACHE_FILE"
     else
         echo "Using cached content" >&2
@@ -169,13 +203,9 @@ if [ -f "$CACHE_FILE" ]; then
     fi
 else
     echo "Fetching new content..." >&2
-    # gil
     # Modern Chrome user agent string
     CHROME_UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-
-    # Fetch with Chrome user agent and pipe to Lynx
     ARTICLE_CONTENT=$(curl -s -L -A "$CHROME_UA" "$URL" | lynx -dump -stdin -nolist -width=80)
-    #ARTICLE_CONTENT=$(curl -s -L "$URL" | lynx -dump -stdin -nolist -width=80)
     echo "$ARTICLE_CONTENT" > "$CACHE_FILE"
 fi
 
@@ -251,6 +281,5 @@ fi
 
 # Final output (to stdout)
 echo "$summary"
-
 
 unload_ollama_models "$OLLAMA_HOST"
